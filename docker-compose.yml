@@ -1,0 +1,17 @@
+# One-command run:  docker compose up -d   →  http://localhost:8000
+# Data survives restarts (stored in the "prepwise-data" volume).
+services:
+  prepwise:
+    image: ${PREPWISE_IMAGE:-prepwise}
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY:-}   # optional; empty = Demo mode
+      - TZ=Asia/Kolkata
+    volumes:
+      - prepwise-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  prepwise-data:

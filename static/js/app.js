@@ -26,6 +26,8 @@ let cleanup = null;
 // ================================================================== boot
 async function boot() {
   try { state.status = await api("/status"); } catch { state.status = { llm: false, version: "1.0" }; }
+  const as = new URLSearchParams(location.search).get("as");   // ?as=<id> switches student (demos)
+  if (as) { localStorage.setItem("prepwise.student", as); history.replaceState(null, "", "/" + location.hash); }
   const saved = localStorage.getItem("prepwise.student");
   if (saved) {
     state.student = { id: +saved };
@@ -206,7 +208,7 @@ function newChat() { location.hash = "#/"; if (location.hash === "#/") route(); 
 
 // ================================================================== router
 function route() {
-  const path = location.hash.replace(/^#/, "") || "/";
+  const path = location.hash.replace(/^#/, "").split("?")[0] || "/";
   const match = ROUTES.map(r => ({ r, m: path.match(r.re) })).find(x => x.m) || { r: ROUTES[0], m: [] };
   $$("[data-nav]").forEach(b => b.classList.toggle("active", b.dataset.nav === match.r.nav));
   $$(".history-item").forEach(b => b.classList.toggle("active", path === `/chat/${b.dataset.chat}`));

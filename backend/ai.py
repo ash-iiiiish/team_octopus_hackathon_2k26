@@ -43,6 +43,7 @@ def answer(student_id, question, history):
     text = llm.complete(messages, temperature=0.4)
     if text is None:
         text = _extractive_answer(question, chunks)
+    text = re.sub(r"【\s*(\d+)\s*(?:†[^】]*)?】", r"[\1]", text)  # some models cite as 【1】
     return text, _sources(chunks)
 
 
@@ -52,7 +53,7 @@ def _extractive_answer(question, chunks):
             "I couldn't find this in your uploaded notes yet.\n\n"
             "**Next step:** upload the chapter in **Library**, then ask again. I'll answer from your notes "
             "and turn them into a mind map and roadmap.\n\n"
-            "_Demo mode: add a `GROQ_API_KEY` in `.env` for full AI answers._"
+            "*Demo mode — add a Groq API key in .env for full AI answers.*"
         )
     lines = ["Here's what your notes say:\n"]
     for i, c in enumerate(chunks[:3]):
@@ -61,7 +62,7 @@ def _extractive_answer(question, chunks):
         for s in rag.best_sentences(c["content"], question, n=2):
             lines.append(f"- {s} [{i + 1}]")
         lines.append("")
-    lines.append("_Demo mode: answers are quoted from your notes. Add a `GROQ_API_KEY` for explanations._")
+    lines.append("*Demo mode — answers are quoted from your notes. Add a Groq API key for full explanations.*")
     return "\n".join(lines)
 
 
@@ -176,7 +177,7 @@ using the notes. Return JSON: {{"questions": [{{"q": "...", "options": ["...",".
 
 
 def build_quiz(student_id, topic, n=5):
-    chunks = rag.retrieve(student_id, f"{topic['title']} {topic.get('description', '')}", k=5)
+    chunks = rag.topic_chunks(student_id, topic["title"], topic.get("description", ""), k=5)
     data = llm.complete(
         [{"role": "system", "content": QUIZ_PROMPT.format(n=n)},
          {"role": "user", "content": f"Topic: {topic['title']}\n\nNotes:\n{_context_block(chunks) or 'none'}"}],
@@ -224,7 +225,7 @@ def cheat_sheet(student_id, topics):
     """Highest-yield points per topic, for last-minute revision."""
     out = []
     for t in topics:
-        chunks = rag.retrieve(student_id, f"{t['title']} {t.get('description', '')}", k=3)
+        chunks = rag.topic_chunks(student_id, t["title"], t.get("description", ""), k=3)
         text = llm.complete(
             [{"role": "system", "content": "Give the 4 highest-yield exam points for this topic as terse bullets "
                                            "(definitions, formulas, one common trap). Max 70 words."},
@@ -232,7 +233,14 @@ def cheat_sheet(student_id, topics):
             max_tokens=250,
         )
         if text:
-            points = [re.sub(r"^[-*•\d.)\s]+", "", l).strip() for l in text.splitlines() if l.strip()]
+            points = []
+            for line in text.splitlines():
+                line = re.sub(r"^[-*•\d.)\s]+", "", line)
+                line = re.sub(r"\*\*|__|`", "", line)                      # markdown emphasis
+                line = re.sub(r"\(\s*[≈~]?\s*\d+\s*words?\s*\)", "", line)  # "(≈68 words)"
+                line = re.sub(r"[   ]", " ", line).strip(" *")  # no-break spaces stop wrapping
+                if line:
+                    points.append(line)
         else:
             body = " ".join(c["content"] for c in chunks)
             points = [_short(s, 150) for s in rag.best_sentences(body, t["title"], n=4)]

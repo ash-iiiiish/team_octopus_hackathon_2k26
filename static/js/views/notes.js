@@ -1,7 +1,7 @@
 import { api, $, $$, h, esc, icon, md, debounce, toastError, confirmDialog, relDay, hm } from "../lib.js";
 
 const EMOJIS = ["📄", "📘", "📗", "📕", "🧠", "🎯", "🧪", "📐", "💡", "🗂️", "📝", "⭐", "🔥", "🧮", "🌍", "💻", "⚙️", "📊", "🧬", "⚡", "🗓️", "✅", "❓", "📌"];
-let notes = [], subjects = [], current = null, mode = localStorage.getItem("prepwise.noteMode") || "write";
+let notes = [], subjects = [], current = null, mode = "read";
 const openNodes = new Set(JSON.parse(localStorage.getItem("prepwise.openNotes") || "[]"));
 
 export function render(view, [id]) {
@@ -67,7 +67,7 @@ function drawTree() {
     html = `<div class="tree-label">Results</div>` + (hits.map(n => item({ ...n }, 0)).join("") || `<div class="muted" style="padding:6px 8px">No pages</div>`);
   } else {
     const pinned = notes.filter(n => n.pinned);
-    if (pinned.length) html += `<div class="tree-label">Pinned</div>` + pinned.map(n => `<div class="tree-item ${current?.id === n.id ? "active" : ""}" data-id="${n.id}" style="padding-left:6px"><span class="caret" style="visibility:hidden"></span><span class="emoji">${n.icon || "📄"}</span><span class="t">${esc(n.title)}</span></div>`).join("");
+    if (pinned.length) html += `<div class="tree-label">Pinned</div>` + pinned.map(n => `<div class="tree-item" data-id="${n.id}" style="padding-left:6px"><span class="caret" style="visibility:hidden"></span><span class="emoji">${n.icon || "📄"}</span><span class="t">${esc(n.title)}</span></div>`).join("");
     html += `<div class="tree-label">Pages</div>` + (kids(null).map(n => item(n, 0)).join("") || `<div class="muted" style="padding:6px 8px">No pages yet</div>`);
   }
   tree.innerHTML = html;
@@ -113,6 +113,7 @@ async function openNote(id, focusTitle = false) {
   let n;
   try { n = await api(`/notes/${id}`); } catch (e) { return toastError(e); }
   current = n;
+  mode = focusTitle || !n.content.trim() ? "write" : "read";
   drawTree();
   const crumbs = [];
   let p = n.parent_id;
@@ -180,13 +181,28 @@ async function openNote(id, focusTitle = false) {
       };
       requestAnimationFrame(grow);
     } else {
-      body.innerHTML = `<div class="md" style="font-size:14px">${md(state.content) || `<p class="muted">Empty page. Switch to Write to add content.</p>`}</div>`;
+      body.innerHTML = `<div class="md" style="font-size:14px;cursor:text;min-height:300px">${md(state.content) || `<p class="muted">Empty page. Click to start writing.</p>`}</div>`;
+      // checklists are tickable while reading; clicking anywhere else starts editing
+      $$("li.task input", body).forEach((cb, i) => {
+        cb.disabled = false;
+        cb.onclick = (e) => {
+          e.stopPropagation();
+          let k = -1;
+          state.content = state.content.replace(/^(\s*[-*+]\s+)\[( |x|X)\]/gm, (m, pre, v) => (++k === i ? `${pre}[${v === " " ? "x" : " "}]` : m));
+          queue({}); drawBody();
+        };
+      });
+      $(".md", body).onclick = (e) => {
+        if (e.target.closest("a, input")) return;
+        mode = "write"; $$("[data-mode]").forEach(x => x.classList.toggle("active", x.dataset.mode === "write"));
+        drawBody(); $("#nbody textarea")?.focus();
+      };
     }
   };
   drawBody();
 
   $$("[data-mode]").forEach(b => b.onclick = () => {
-    mode = b.dataset.mode; localStorage.setItem("prepwise.noteMode", mode);
+    mode = b.dataset.mode;
     $$("[data-mode]").forEach(x => x.classList.toggle("active", x === b)); drawBody();
   });
   const titleIn = $("#ntitle");

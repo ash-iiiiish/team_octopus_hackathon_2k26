@@ -1,8 +1,7 @@
 """Ingestion and retrieval over the student's own notes.
 
-Chunks live in Postgres with a generated tsvector column, so retrieval is
-Postgres full-text search ranked with ts_rank_cd (headings weighted higher).
-No vector DB or embedding model is needed to run the project.
+Chunks live in SQLite with an FTS5 index (Porter stemming, BM25 ranking with
+headings weighted higher). No vector DB or embedding model is needed to run the project.
 """
 import io
 import re
@@ -126,28 +125,33 @@ def keywords(text: str, n=12):
     return [w for w, _ in counts.most_common(n)]
 
 
-def _tsquery(query: str):
+def _terms(query: str):
     terms = [w.lower() for w in WORD_RE.findall(query) if w.lower() not in STOPWORDS]
     terms = [re.sub(r"[^a-z0-9]", "", t) for t in terms]
-    terms = [t for t in dict.fromkeys(terms) if len(t) > 1]
-    return " | ".join(terms[:16])
+    return [t for t in dict.fromkeys(terms) if len(t) > 1][:16]
+
+
+def _fts_query(query: str):
+    """OR of quoted terms, so any matching word counts and BM25 ranks the best passages."""
+    return " OR ".join(f'"{t}"' for t in _terms(query))
 
 
 def retrieve(student_id, query, k=6, document_id=None):
-    """Top-k chunks for a query. Falls back to the first chunks when nothing matches."""
-    tsq = _tsquery(query)
+    """Top-k chunks for a query (SQLite FTS5, BM25 with headings weighted 2x).
+    Falls back to the document's first chunks when nothing matches."""
+    fts = _fts_query(query)
     doc_filter = "AND c.document_id = %s" if document_id else ""
     params_doc = [document_id] if document_id else []
     hits = []
-    if tsq:
+    if fts:
         hits = db.rows(
             f"""SELECT c.id, c.document_id, c.heading, c.content, d.title AS document,
-                       ts_rank_cd(c.tsv, to_tsquery('english', %s)) AS score
-                FROM chunks c JOIN documents d ON d.id = c.document_id
-                WHERE c.student_id = %s {doc_filter}
-                  AND c.tsv @@ to_tsquery('english', %s)
+                       -bm25(chunks_fts, 2.0, 1.0) AS score
+                FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid
+                JOIN documents d ON d.id = c.document_id
+                WHERE chunks_fts MATCH %s AND c.student_id = %s {doc_filter}
                 ORDER BY score DESC LIMIT %s""",
-            [tsq, student_id, *params_doc, tsq, k],
+            [fts, student_id, *params_doc, k],
         )
     if not hits and document_id:
         hits = db.rows(
@@ -157,6 +161,22 @@ def retrieve(student_id, query, k=6, document_id=None):
             (document_id, k),
         )
     return hits
+
+
+def topic_chunks(student_id, title, description="", k=4):
+    """Passages for a syllabus topic: its own section first (heading match), then search."""
+    own = db.rows(
+        """SELECT c.id, c.document_id, c.heading, c.content, d.title AS document, 1 AS score
+           FROM chunks c JOIN documents d ON d.id = c.document_id
+           WHERE c.student_id = %s AND c.heading <> '' AND (c.heading LIKE %s OR %s LIKE '%%' || c.heading || '%%')
+           ORDER BY c.idx LIMIT %s""",
+        (student_id, f"%{title}%", title, k),
+    )
+    if len(own) >= k:
+        return own
+    seen = {c["id"] for c in own}
+    more = [c for c in retrieve(student_id, f"{title} {title} {description}", k=k + len(own)) if c["id"] not in seen]
+    return own + more[: k - len(own)]
 
 
 def document_sections(document_id):
@@ -173,7 +193,7 @@ def sentences(text: str):
 
 
 def best_sentences(text: str, query: str, n=3):
-    q = set(_tsquery(query).split(" | "))
+    q = set(_terms(query))
     scored = []
     for i, s in enumerate(sentences(text)):
         words = {w.lower() for w in WORD_RE.findall(s)}

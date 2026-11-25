@@ -313,7 +313,7 @@ class NoteIn(BaseModel):
 @app.get("/api/notes")
 def list_notes(sid: int = Depends(student_id)):
     return db.rows("""SELECT id, parent_id, subject_id, title, icon, tags, pinned, position, created_at, updated_at,
-                             left(content, 160) AS preview
+                             substr(content, 1, 160) AS preview
                       FROM notes WHERE student_id=%s ORDER BY position, created_at""", (sid,))
 
 
@@ -349,7 +349,7 @@ def update_note(nid: int, body: NoteIn, sid: int = Depends(student_id)):
     if not fields:
         return owned("notes", nid, sid)
     sets = ", ".join(f"{k}=%s" for k in fields)
-    return db.row(f"UPDATE notes SET {sets}, updated_at=now() WHERE id=%s RETURNING *", (*fields.values(), nid))
+    return db.row(f"UPDATE notes SET {sets}, updated_at=datetime('now','localtime') WHERE id=%s RETURNING *", (*fields.values(), nid))
 
 
 class MoveIn(BaseModel):
@@ -450,7 +450,7 @@ def _slash(sid, text):
                 f"**Must do:** {must}\n\n**Skim only:** {len(t['skim'])} · **Skip:** {len(t['skip'])}\n\n"
                 "You've got this — one sprint at a time.", {"action": "planner", "roadmap": res["roadmap_id"]})
     if cmd == "quiz":
-        t = db.row("""SELECT * FROM topics WHERE student_id=%s AND (%s='' OR title ILIKE %s)
+        t = db.row("""SELECT * FROM topics WHERE student_id=%s AND (%s='' OR title LIKE %s)
                       ORDER BY mastery ASC, weightage DESC LIMIT 1""", (sid, arg, f"%{arg}%"))
         if not t:
             return "No matching topic yet. Generate a mind map or add topics in **Progress → Syllabus**.", {}
@@ -485,8 +485,14 @@ def send_message(cid: int, body: ChatMsg, sid: int = Depends(student_id)):
                  (cid, reply, db.Json(meta)))
     title = chat["title"]
     if title == "New chat":
-        title = re.sub(r"^/\w+\s*", "", text)[:48] or text[:48]
-    db.run("UPDATE chats SET updated_at=now(), title=%s WHERE id=%s", (title, cid))
+        names = {"progress": "Progress snapshot", "roadmap": "Roadmap to exam", "mindmap": "Mind map",
+                 "crisis": "Crisis plan", "quiz": "Quiz", "help": "Commands"}
+        if text.startswith("/"):
+            cmd, _, arg = text[1:].partition(" ")
+            title = f"{names.get(cmd.lower(), cmd)}{': ' + arg.strip() if arg.strip() else ''}"[:48]
+        else:
+            title = text[:48]
+    db.run("UPDATE chats SET updated_at=datetime('now','localtime'), title=%s WHERE id=%s", (title, cid))
     return {"user": user_msg, "assistant": bot, "title": title}
 
 
@@ -504,7 +510,7 @@ def _save_roadmap(sid, mode, exam_date, summary, events):
         # replace the previous plan's future, unfinished blocks; keep history
         cur.execute("""DELETE FROM events WHERE student_id=%s AND roadmap_id IS NOT NULL
                        AND status='planned' AND start_at >= %s""", (sid, now))
-        cur.execute("UPDATE roadmaps SET active=false WHERE student_id=%s", (sid,))
+        cur.execute("UPDATE roadmaps SET active=0 WHERE student_id=%s", (sid,))
         cur.execute("INSERT INTO roadmaps (student_id, mode, exam_date, summary) VALUES (%s,%s,%s,%s) RETURNING id",
                     (sid, mode, exam_date, db.Json(summary)))
         rid = cur.fetchone()["id"]
@@ -520,7 +526,7 @@ def _save_roadmap(sid, mode, exam_date, summary, events):
 def plan_assess(sid: int = Depends(student_id)):
     s, topics = _student_and_topics(sid)
     result = planner.assess(s, topics)
-    result["roadmap"] = db.row("SELECT * FROM roadmaps WHERE student_id=%s AND active ORDER BY id DESC LIMIT 1", (sid,))
+    result["roadmap"] = db.row("SELECT * FROM roadmaps WHERE student_id=%s AND active=1 ORDER BY id DESC LIMIT 1", (sid,))
     result["topics"] = len(topics)
     return result
 
@@ -566,7 +572,7 @@ def make_crisis_plan(body: CrisisIn, sid: int = Depends(student_id)):
 
 @app.get("/api/plan/roadmap")
 def active_roadmap(sid: int = Depends(student_id)):
-    r = db.row("SELECT * FROM roadmaps WHERE student_id=%s AND active ORDER BY id DESC LIMIT 1", (sid,))
+    r = db.row("SELECT * FROM roadmaps WHERE student_id=%s AND active=1 ORDER BY id DESC LIMIT 1", (sid,))
     if not r:
         return None
     r["events"] = db.rows("""SELECT e.*, t.mastery FROM events e LEFT JOIN topics t ON t.id=e.topic_id
@@ -639,7 +645,8 @@ def reminders(sid: int = Depends(student_id)):
     """Events whose reminder window is open now (the browser polls this every minute)."""
     now = datetime.now()
     return db.rows("""SELECT * FROM events WHERE student_id=%s AND status='planned'
-                      AND start_at - make_interval(mins => remind_before) <= %s AND start_at > %s - interval '2 minutes'
+                      AND datetime(start_at, '-' || remind_before || ' minutes') <= %s
+                      AND start_at > datetime(%s, '-2 minutes')
                       ORDER BY start_at""", (sid, now, now))
 
 
@@ -656,17 +663,17 @@ def search(q: str = "", sid: int = Depends(student_id)):
     res = {
         "chats": db.rows("""SELECT DISTINCT c.id, c.title, c.updated_at FROM chats c
                             LEFT JOIN messages m ON m.chat_id=c.id
-                            WHERE c.student_id=%s AND (c.title ILIKE %s OR m.content ILIKE %s)
+                            WHERE c.student_id=%s AND (c.title LIKE %s OR m.content LIKE %s)
                             ORDER BY c.updated_at DESC LIMIT 20""", (sid, like, like)),
-        "notes": db.rows("""SELECT id, title, icon, updated_at, left(content,120) AS preview FROM notes
-                            WHERE student_id=%s AND (title ILIKE %s OR content ILIKE %s OR %s = ANY(tags))
+        "notes": db.rows("""SELECT id, title, icon, updated_at, substr(content,1,120) AS preview FROM notes
+                            WHERE student_id=%s AND (title LIKE %s OR content LIKE %s OR EXISTS (SELECT 1 FROM json_each(tags) WHERE value = %s))
                             ORDER BY updated_at DESC LIMIT 20""", (sid, like, like, q.strip())),
         "files": db.rows("""SELECT id, title, kind, size_bytes, created_at FROM documents
-                            WHERE student_id=%s AND (title ILIKE %s OR content ILIKE %s)
+                            WHERE student_id=%s AND (title LIKE %s OR content LIKE %s)
                             ORDER BY created_at DESC LIMIT 20""", (sid, like, like)),
-        "mindmaps": db.rows("""SELECT id, title, created_at FROM mindmaps WHERE student_id=%s AND title ILIKE %s
+        "mindmaps": db.rows("""SELECT id, title, created_at FROM mindmaps WHERE student_id=%s AND title LIKE %s
                                ORDER BY created_at DESC LIMIT 20""", (sid, like)),
-        "topics": db.rows("""SELECT id, title, mastery, weightage FROM topics WHERE student_id=%s AND title ILIKE %s
+        "topics": db.rows("""SELECT id, title, mastery, weightage FROM topics WHERE student_id=%s AND title LIKE %s
                              ORDER BY weightage DESC LIMIT 20""", (sid, like)),
     }
     if q.strip():
@@ -711,7 +718,7 @@ def seed_demo(sid: int = Depends(student_id)):
                                    VALUES (%s,%s,%s,5,%s)""", (sid, t["id"], max(0, min(5, round(target / 20))), when))
             cur.execute("UPDATE topics SET mastery=%s, times_studied=%s WHERE id=%s", (target, steps, t["id"]))
         cur.execute("""INSERT INTO notes (student_id, subject_id, title, icon, content, tags, pinned, position) VALUES
-            (%s,%s,'Exam strategy','🎯',%s,'{strategy}',true,0)""",
+            (%s,%s,'Exam strategy','🎯',%s,'["strategy"]',1,0)""",
                     (sid, subj["id"],
                      "## Before the exam\n- [x] Collect previous year papers\n- [ ] Solve 2 Banker's algorithm numericals\n"
                      "- [ ] Revise page replacement with a reference string\n\n## In the hall\n1. Read all questions first\n"

@@ -1,0 +1,9 @@
+.git
+.env
+data/
+_legacy/
+venv/
+agentsenv/
+**/__pycache__/
+*.pyc
+README.md

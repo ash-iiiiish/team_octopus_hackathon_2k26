@@ -6,7 +6,7 @@ from backend import db
 
 def set_mastery(topic_id, value, source, cur=None):
     value = round(max(0.0, min(100.0, value)), 1)
-    sql_t = """UPDATE topics SET mastery=%s, last_studied=now(), times_studied=times_studied+1
+    sql_t = """UPDATE topics SET mastery=%s, last_studied=datetime('now','localtime'), times_studied=times_studied+1
                WHERE id=%s"""
     sql_h = "INSERT INTO mastery_history (topic_id, mastery, source) VALUES (%s,%s,%s)"
     if cur is not None:
@@ -66,7 +66,7 @@ def report(student_id):
     now = datetime.now()
 
     # readiness over the last 30 days, replaying mastery history
-    history = db.rows("""SELECT h.topic_id, h.mastery, h.recorded_at::date AS d FROM mastery_history h
+    history = db.rows("""SELECT h.topic_id, h.mastery, date(h.recorded_at) AS d FROM mastery_history h
                          JOIN topics t ON t.id=h.topic_id WHERE t.student_id=%s ORDER BY h.recorded_at""",
                       (student_id,))
     by_topic = {}
@@ -88,8 +88,8 @@ def report(student_id):
         timeline.append({"date": d.isoformat(), "readiness": _readiness(topics, mastery_on(d)) if topics else 0})
     readiness = _readiness(topics, lambda t: t["mastery"]) if topics else 0
 
-    sessions = db.rows("""SELECT created_at::date AS d, extract(hour FROM created_at)::int AS h, minutes
-                          FROM study_sessions WHERE student_id=%s AND created_at > now() - interval '60 days'""",
+    sessions = db.rows("""SELECT date(created_at) AS d, CAST(strftime('%%H', created_at) AS INTEGER) AS h, minutes
+                          FROM study_sessions WHERE student_id=%s AND created_at > datetime('now','localtime','-60 days')""",
                        (student_id,))
     per_day = {}
     per_hour = {}

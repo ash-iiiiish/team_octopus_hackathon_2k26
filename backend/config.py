@@ -9,7 +9,8 @@ load_dotenv(ROOT / ".env")
 APP_NAME = "Prepwise"
 APP_VERSION = "1.0"
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost:5432/prepwise")
+# SQLite file — created automatically; delete it to reset the demo.
+DB_PATH = os.getenv("DB_PATH", str(ROOT / "data" / "prepwise.db"))
 
 # Groq exposes an OpenAI-compatible API with a free tier.
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()

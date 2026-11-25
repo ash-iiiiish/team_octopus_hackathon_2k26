@@ -95,6 +95,7 @@ export function icon(name, cls = "") {
 // ------------------------------------------------------------------ markdown (small, safe subset)
 function inline(s) {
   return esc(s)
+    .replace(/&lt;br\s*\/?&gt;/gi, "<br>")   // models often put <br> inside table cells
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
